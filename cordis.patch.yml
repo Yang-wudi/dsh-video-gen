@@ -1,0 +1,5 @@
+- insert:
+    - id: video-gen
+      name: dsh-video-gen
+      config:
+        provider: dashscope
