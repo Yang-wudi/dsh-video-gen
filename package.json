@@ -1,13 +1,19 @@
 {
   "name": "dsh-video-gen",
-  "version": "0.1.0",
-  "description": "Bring text-to-video generation to DeepSeek Harness — DashScope Wanx, Volcengine/Doubao Seedance, OpenAI Sora & compatible relays.",
+  "version": "0.2.0",
+  "description": "Bring text-to-video and image-to-video generation to DeepSeek Harness — DashScope Wanx, Volcengine/Doubao Seedance, Google Veo, OpenAI Sora & compatible relays.",
   "type": "module",
   "author": "shanliuling",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shanliuling/dsh-video-gen.git"
+  },
   "license": "MIT",
   "main": "lib/index.js",
+  "types": "src/index.ts",
   "exports": {
     ".": {
+      "types": "./src/index.ts",
       "default": "./lib/index.js"
     },
     "./client": {
@@ -18,6 +24,9 @@
   "files": [
     "lib/index.js",
     "lib/client.js",
+    "lib/shared.js",
+    "lib/google.js",
+    "lib/reference-image.js",
     "cordis.patch.yml",
     "README.md",
     "README.zh-CN.md",
@@ -31,6 +40,7 @@
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-client-ui-settings-plugins",
         "@deepseek-ai/dsh-client-ui-tool",
@@ -50,11 +60,15 @@
     "ai-agent",
     "video-generation",
     "text-to-video",
+    "image-to-video",
     "sora",
     "seedance",
     "wanx",
+    "veo",
+    "gemini",
     "dashscope",
     "volcengine",
+    "google",
     "doubao",
     "byok",
     "cordis"
@@ -69,6 +83,13 @@
     "react": ">=18.2.0 <19"
   },
   "scripts": {
-    "check": "node --check lib/index.js && node --check lib/client.js"
+    "check": "node --check lib/index.js && node --check lib/client.js && node --check lib/shared.js && node --check lib/google.js && node --check lib/reference-image.js",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "@types/react": "~18.3.1",
+    "typescript": "^5.7.0"
   }
 }
