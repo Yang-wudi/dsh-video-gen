@@ -6,6 +6,8 @@
 [![DSH Plugin](https://img.shields.io/badge/Plugin%20For-DeepSeek%20Harness-6366f1?style=flat-square)](https://github.com/deepseek-ai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](LICENSE)
 
+![dsh-video-gen 封面](docs/assets/hero-poster.jpg)
+
 [English](README.md) | **简体中文**
 
 ---
