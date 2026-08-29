@@ -1,0 +1,11 @@
+# Dependencies
+node_modules/
+
+# Package manager stores
+.pnpm-store/
+
+# Session tooling state
+.agent-teams/
+
+# Logs
+*.log

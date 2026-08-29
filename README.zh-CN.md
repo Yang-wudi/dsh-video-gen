@@ -18,7 +18,7 @@
 - ✅ **两个工具**：`generate_video`（文生视频）和 `animate_image`（图生视频）
 - ✅ **对话内播放**：生成的视频直接在对话流中显示
 - ✅ **自动保存**：视频文件自动保存到 Agent 工作区
-- ✅ **视频画廊**：会话顶栏 Tab，集中浏览、搜索、筛选所有历史视频
+- ✅ **视频画廊**：会话顶栏 Tab，集中浏览、搜索、筛选、预览、下载、删除所有历史视频
 - ✅ **Web 设置界面**：在 DSH Settings 中可视化配置
 
 ---
@@ -53,6 +53,18 @@ pnpm dsh plugin --profile web add dsh-video-gen@latest
 
 ---
 
+## 🖼️ 视频画廊
+
+Agent 生成的每个视频都会自动收录进**视频画廊** —— 会话顶栏的原生 Tab（与 [dsh-image-gen](https://github.com/shanliuling/dsh-image-gen) 画廊同款交互）：
+
+- **网格总览**：卡片悬停自动预览播放，带厂商/模型标签、图生视频角标、文件大小、请求时长与生成日期
+- **搜索与筛选**：按 Prompt 关键词或模型搜索，按厂商筛选
+- **灯箱预览**：点击卡片全屏播放，支持控制条
+- **卡片与灯箱操作**：下载视频、复制 Prompt、从画廊删除（不影响聊天记录；删除后通过墓碑机制避免再次收录）
+- **持久可播**：画廊不依赖内存缓存。条目通过 HTTP 路由的持久化回退（POST attachment + 视频目录旁的 marker 索引）从工作区文件重新取回视频，24 条 LRU 淘汰和 DSH 重启后依然可播（需开启默认的"保存到工作区"）
+
+---
+
 ## 📖 支持的提供商
 
 | 提供商 | 模型 | 图生视频 |
@@ -79,12 +91,24 @@ pnpm dsh plugin --profile web add dsh-video-gen@latest
 
 ---
 
+## 🔧 开发与测试
+
+```bash
+npm run check      # node --check 语法检查
+npm run typecheck  # tsc --noEmit（src 为公共类型面，勿执行 tsc build 覆盖 lib）
+npm test           # node:test 单元/集成测试（零额外依赖）
+```
+
+---
+
 ## 📄 许可证
 
-MIT © shanliuling
+MIT © Yang-wudi
+
+本软件部分代码改编自 [dsh-image-gen](https://github.com/shanliuling/dsh-image-gen)（MIT © dsh-image-gen contributors），详见 [LICENSE](LICENSE)。
 
 ---
 
 ## 🙏 鸣谢
 
-本项目受 [dsh-image-gen](https://github.com/shanliuling/dsh-image-gen) 启发。
+本项目改编自 shanliuling 的 [dsh-image-gen](https://github.com/shanliuling/dsh-image-gen)（MIT 许可证）：视频画廊、设置卡片、对话内结果展示与多提供商架构源自该项目的设计与代码。感谢 shanliuling 出色的基础工作。

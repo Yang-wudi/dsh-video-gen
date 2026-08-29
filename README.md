@@ -20,6 +20,7 @@ DeepSeek Harness already enables agents to call various tools to complete tasks.
 - ✅ **Two tools**: `generate_video` (text-to-video) and `animate_image` (image-to-video)
 - ✅ **In-conversation playback**: Generated videos are displayed directly in the conversation flow
 - ✅ **Auto-save to workspace**: Videos are saved to the agent's workspace for later use
+- ✅ **Video gallery**: A session tab that collects every generated video — search, filter, preview, download, delete
 - ✅ **Web settings UI**: Configure API keys, endpoints, and models visually in DSH Settings
 
 ---
@@ -101,11 +102,24 @@ The agent will automatically call the `generate_video` or `animate_image` tool, 
 
 ---
 
+## 🖼️ Video Gallery
+
+Every video the agent generates is automatically collected into the **Video Gallery** — a native session tab next to the conversation (same UX as the [dsh-image-gen](https://github.com/shanliuling/dsh-image-gen) gallery):
+
+- **Grid overview** with hover-to-play previews, provider/model tags, an image-to-video badge, file size, requested duration, and generation date
+- **Search** by prompt keywords or model, and **filter** by provider
+- **Lightbox preview**: click a card to play full-screen with controls
+- **Card & lightbox actions**: download the file, copy the prompt, delete from the gallery (chat history is untouched; tombstones prevent re-collection)
+- **Durable playback**: the gallery does not depend on the in-memory cache. Items re-fetch the video from the workspace file — through the HTTP route's persistence fallback and a co-located marker index — so videos keep playing after the 24-entry LRU eviction *and* after a DSH host restart (as long as "Save to workspace" is enabled, the default)
+
+---
+
 ## 📝 How It Works
 
 1. **Async tasks**: Video generation is asynchronous (submit → poll → download). The plugin handles polling automatically.
-2. **In-memory cache**: Generated video bytes are cached in memory and streamed to the client via the HTTP route `/plugins/dsh-video-gen/video`.
-3. **Workspace persistence**: By default, videos are saved to the agent's workspace under the `dsh-video-gen` subfolder. The file path is returned in the `savedTo` field.
+2. **In-memory cache**: Generated video bytes are cached in memory and streamed to the client via `GET /plugins/dsh-video-gen/video?id=…` for immediate playback.
+3. **Durable fallback**: `POST /plugins/dsh-video-gen/video` with the `attachment` reference (`videoId` + `savedTo`) re-serves the video from the workspace file when the cache has evicted it or the host restarted. A `.dsh-video-gen-index.json` marker next to the saved videos authorizes post-restart reads; reads are always confined to that video folder, and the client falls back to the cached route when the file is gone.
+4. **Workspace persistence**: By default, videos are saved to the agent's workspace under the `dsh-video-gen` subfolder. The file path is returned in the `savedTo` field.
 
 ---
 
@@ -126,15 +140,17 @@ Available in Settings → Plugins → Video generation:
 
 ## 📦 Development & Build
 
-This project is written in pure ES modules (no TypeScript build step). The client code is pre-wrapped in the `__ModuleLoader__.load` format.
+This project is written in pure ES modules (no TypeScript build step). The client code is pre-wrapped in the `__ModuleLoader__.load` format. `src/index.ts` mirrors `lib/index.js` as the public type surface — do not run `tsc` build, it would overwrite the hand-maintained bundles.
 
 ```bash
 # Syntax check
-node --check lib/index.js
-node --check lib/client.js
-node --check lib/shared.js
-node --check lib/google.js
-node --check lib/reference-image.js
+npm run check
+
+# Type check (src as the public type surface)
+npm run typecheck
+
+# Tests (node:test, no extra dependencies)
+npm test
 
 # Install to web profile
 pnpm dsh plugin --profile web add ./dsh-video-gen
@@ -144,10 +160,12 @@ pnpm dsh plugin --profile web add ./dsh-video-gen
 
 ## 📄 License
 
-MIT © shanliuling
+MIT © Yang-wudi
+
+Portions of this software are adapted from [dsh-image-gen](https://github.com/shanliuling/dsh-image-gen) (MIT © dsh-image-gen contributors); see [LICENSE](LICENSE).
 
 ---
 
 ## 🙏 Acknowledgments
 
-This project is inspired by [dsh-image-gen](https://github.com/shanliuling/dsh-image-gen) and follows its design patterns for settings cards, in-conversation display, and multi-provider architecture.
+This project is adapted from [dsh-image-gen](https://github.com/shanliuling/dsh-image-gen) by shanliuling (MIT): the gallery, settings card, in-conversation result cards, and multi-provider architecture derive from its design and code. Thanks to shanliuling for the excellent groundwork.

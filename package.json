@@ -1,12 +1,12 @@
 {
   "name": "dsh-video-gen",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Bring text-to-video and image-to-video generation to DeepSeek Harness — DashScope Wanx, Volcengine/Doubao Seedance, Google Veo, OpenAI Sora & compatible relays.",
   "type": "module",
-  "author": "shanliuling",
+  "author": "Yang-wudi",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/shanliuling/dsh-video-gen.git"
+    "url": "git+https://github.com/Yang-wudi/dsh-video-gen.git"
   },
   "license": "MIT",
   "main": "lib/index.js",
@@ -27,6 +27,10 @@
     "lib/shared.js",
     "lib/google.js",
     "lib/reference-image.js",
+    "src/index.ts",
+    "src/shared.ts",
+    "src/google.ts",
+    "src/reference-image.ts",
     "cordis.patch.yml",
     "README.md",
     "README.zh-CN.md",
@@ -85,11 +89,12 @@
   "scripts": {
     "check": "node --check lib/index.js && node --check lib/client.js && node --check lib/shared.js && node --check lib/google.js && node --check lib/reference-image.js",
     "typecheck": "tsc --noEmit",
-    "build": "tsc"
+    "build": "tsc",
+    "test": "node tests/video-route.test.mjs && node tests/finish-video.test.mjs && node tests/client-bundle.test.mjs"
   },
   "devDependencies": {
-    "@types/node": "^22.20.0",
-    "@types/react": "~18.3.1",
-    "typescript": "^5.7.0"
+    "@types/node": "^22.20.1",
+    "@types/react": "~18.3.31",
+    "typescript": "^5.9.3"
   }
 }

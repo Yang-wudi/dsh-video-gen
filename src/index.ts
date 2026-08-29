@@ -6,8 +6,8 @@ import { installSettingsSection, settingsNamespace } from "@deepseek-ai/dsh-sett
 import { defineTool, type ToolResult } from "@deepseek-ai/dsh-tools";
 import z from "@deepseek-ai/schemastery";
 import { randomUUID } from "node:crypto";
-import { mkdir, realpath, rename, unlink, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { mkdir, readFile, realpath, rename, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import {
 	VIDEO_ROUTE,
@@ -393,6 +393,35 @@ async function generateOpenAIVideo(input: OpenAIInput): Promise<GeneratedVideo &
 //#region in-memory video store + HTTP route
 const videoCache = new Map<string, { data: Uint8Array; mediaType: string }>();
 const MAX_CACHE_ENTRIES = 24;
+const MAX_ROUTE_BODY_BYTES = 8192;
+const VIDEO_FILE_EXTENSIONS = new Set([".mp4", ".webm", ".mov"]);
+const VIDEO_EXTENSION_MEDIA_TYPE: Record<string, string> = { ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime" };
+/**
+ * Marker index co-located with saved videos (one per video folder). It records
+ * { videoId -> file } so the HTTP route can re-serve a video from disk after a
+ * host restart, when both the in-memory byte cache and the trusted-root set
+ * are gone. Only the plugin writes markers, which makes them the trust anchor
+ * for post-restart reads.
+ */
+const WORKSPACE_MARKER_NAME = ".dsh-video-gen-index.json";
+
+/** A durable reference the client can use to re-fetch a generated video. */
+export type VideoAttachmentRef = {
+	videoId: string;
+	savedTo: string;
+	mediaType: string;
+	[k: string]: string;
+};
+
+// Workspace roots seen while persisting videos this process lifetime. The POST
+// fallback only reads files contained inside one of these trusted roots, so a
+// client-supplied savedTo path can never escape the workspace (defense-in-depth
+// on top of the realpath containment check).
+const knownWorkspaceRoots = new Set<string>();
+
+function rememberWorkspaceRoot(root: string | undefined): void {
+	if (typeof root === "string" && root.length > 0) knownWorkspaceRoots.add(resolve(root));
+}
 
 function cacheVideo(data: Uint8Array, mediaType: string): string {
 	const id = randomUUID();
@@ -405,8 +434,173 @@ function cacheVideo(data: Uint8Array, mediaType: string): string {
 	return id;
 }
 
-function serveVideo(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): void {
+/** A video file name safe to join onto a directory: no separators, known extension. */
+function safeVideoFileName(name: string): boolean {
+	if (typeof name !== "string" || name.length === 0) return false;
+	if (name.includes("/") || name.includes("\\")) return false;
+	const dot = name.lastIndexOf(".");
+	if (dot <= 0) return false;
+	return VIDEO_FILE_EXTENSIONS.has(name.slice(dot).toLowerCase());
+}
+
+interface WorkspaceMarkerEntry {
+	file: string;
+	mediaType?: unknown;
+	bytes?: unknown;
+	createdAt?: unknown;
+}
+
+/** Parse the marker index in dir and return one video entry, or undefined. */
+async function readWorkspaceMarkerEntry(dir: string, videoId: string): Promise<WorkspaceMarkerEntry | undefined> {
 	try {
+		const parsed: unknown = JSON.parse(await readFile(join(dir, WORKSPACE_MARKER_NAME), "utf8"));
+		const record = parsed !== null && typeof parsed === "object" ? parsed as { videos?: unknown } : undefined;
+		const videos = record?.videos !== undefined && typeof record.videos === "object" && !Array.isArray(record.videos)
+			? record.videos as Record<string, unknown>
+			: undefined;
+		const entry = videos ? videos[videoId] : undefined;
+		if (entry && typeof entry === "object" && typeof (entry as { file?: unknown }).file === "string") {
+			return entry as WorkspaceMarkerEntry;
+		}
+		return undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** Merge one video entry into the marker index next to the saved file (best effort). */
+async function upsertWorkspaceMarker(dir: string, videoId: string, file: string, mediaType: string, bytes: number): Promise<void> {
+	const markerPath = join(dir, WORKSPACE_MARKER_NAME);
+	let videos: Record<string, unknown> = {};
+	try {
+		const parsed: unknown = JSON.parse(await readFile(markerPath, "utf8"));
+		const candidate = parsed !== null && typeof parsed === "object" ? (parsed as { videos?: unknown }).videos : undefined;
+		if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+			videos = candidate as Record<string, unknown>;
+		}
+	} catch { /* first save or unreadable marker: start a fresh index */ }
+	videos[videoId] = { file, mediaType, bytes, createdAt: Date.now() };
+	const staging = join(dir, `.${WORKSPACE_MARKER_NAME}.${process.pid}-${randomUUID()}.tmp`);
+	try {
+		await writeFile(staging, JSON.stringify({ version: 1, videos }, null, "\t"), { flag: "wx" });
+		await rename(staging, markerPath);
+	} catch (error) {
+		await unlink(staging).catch(() => {});
+		// The marker only powers gallery durability after restarts; a failed
+		// write must never fail the generation itself.
+		console.warn("[dsh-video-gen] failed to update the gallery marker index:", error instanceof Error ? error.message : error);
+	}
+}
+
+function readRouteBody(req: import("node:http").IncomingMessage): Promise<string> {
+	return new Promise((resolvePromise, rejectPromise) => {
+		const chunks: Buffer[] = [];
+		let bytes = 0;
+		req.on("data", (chunk) => {
+			const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+			bytes += buffer.byteLength;
+			if (bytes > MAX_ROUTE_BODY_BYTES) { rejectPromise(new Error("request too large")); req.destroy(); return; }
+			chunks.push(buffer);
+		});
+		req.on("end", () => resolvePromise(Buffer.concat(chunks).toString("utf8")));
+		req.on("error", rejectPromise);
+	});
+}
+
+function originAllowed(req: import("node:http").IncomingMessage): boolean {
+	const origin = req.headers.origin;
+	const host = req.headers.host;
+	if (origin === undefined || host === undefined) return true;
+	return origin === `http://${host}` || origin === `https://${host}`;
+}
+
+/**
+ * Resolve a persisted savedTo path to real bytes. Two paths:
+ * 1. Fast path — the file sits inside a workspace root recorded during this
+ *    process lifetime, enforced by realpath containment.
+ * 2. Durable path — the co-located marker index (written at save time) proves
+ *    the video folder, so reads keep working after a host restart, when the
+ *    trusted-root set is empty. Reads stay confined to the marker's directory.
+ * Returns { data, mediaType } or undefined when the path is missing, out of
+ * bounds, or not a recognized video file.
+ */
+async function readPersistedVideo(attachment: unknown): Promise<{ data: Uint8Array; mediaType: string } | undefined> {
+	const record = attachment !== null && typeof attachment === "object" ? attachment as Record<string, unknown> : undefined;
+	const savedTo = typeof record?.savedTo === "string" ? record.savedTo : undefined;
+	if (typeof savedTo !== "string" || savedTo.length === 0) return undefined;
+	if (!safeVideoFileName(savedTo.slice(Math.max(savedTo.lastIndexOf("/"), savedTo.lastIndexOf("\\")) + 1))) return undefined;
+
+	if (knownWorkspaceRoots.size > 0) {
+		try {
+			const realFile = await realpath(savedTo);
+			for (const root of knownWorkspaceRoots) {
+				let realRoot: string;
+				try { realRoot = await realpath(root); }
+				catch { continue; }
+				if (containsPath(realRoot, realFile)) {
+					const data = await readFile(realFile);
+					return { data, mediaType: VIDEO_EXTENSION_MEDIA_TYPE[savedTo.slice(savedTo.lastIndexOf(".")).toLowerCase()] ?? "application/octet-stream" };
+				}
+			}
+		} catch { /* fall through to the marker path */ }
+	}
+
+	const videoId = typeof record?.videoId === "string" ? record.videoId : undefined;
+	if (videoId === undefined || videoId.length === 0) return undefined;
+	const dir = dirname(savedTo);
+	const entry = await readWorkspaceMarkerEntry(dir, videoId);
+	if (entry === undefined) return undefined;
+	if (!safeVideoFileName(entry.file)) return undefined;
+	const fileName = savedTo.slice(Math.max(savedTo.lastIndexOf("/"), savedTo.lastIndexOf("\\")) + 1);
+	if (entry.file !== fileName) return undefined;
+	try {
+		const realFile = await realpath(join(dir, entry.file));
+		const realDir = await realpath(dir);
+		if (!containsPath(realDir, realFile)) return undefined;
+		const data = await readFile(realFile);
+		return { data, mediaType: VIDEO_EXTENSION_MEDIA_TYPE[entry.file.slice(entry.file.lastIndexOf(".")).toLowerCase()] ?? "application/octet-stream" };
+	} catch {
+		return undefined;
+	}
+}
+
+function sendVideoBytes(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse, data: Uint8Array, mediaType: string): void {
+	res.statusCode = 200;
+	res.setHeader("content-type", mediaType);
+	res.setHeader("content-length", String(data.byteLength));
+	res.setHeader("cache-control", "private, no-store");
+	res.setHeader("x-content-type-options", "nosniff");
+	res.setHeader("accept-ranges", "none");
+	if (req.method === "HEAD") { res.end(); return; }
+	res.end(Buffer.from(data));
+}
+
+/**
+ * Serve a generated video. Fast path: GET/HEAD ?id= from the in-memory cache
+ * (immediate playback). Persistence fallback: POST { attachment: { videoId,
+ * savedTo, mediaType } } reads the durable workspace file when the cache has
+ * evicted the id or the server restarted, so the gallery survives beyond the
+ * 24-entry LRU window — and, thanks to the co-located marker index, beyond a
+ * host restart.
+ */
+async function serveVideo(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse): Promise<void> {
+	try {
+		if (req.method === "POST") {
+			if (!originAllowed(req)) { res.statusCode = 403; res.end("origin rejected"); return; }
+			let body: unknown;
+			try { body = JSON.parse(await readRouteBody(req)); }
+			catch { res.statusCode = 400; res.end("invalid request"); return; }
+			const wrapper = body !== null && typeof body === "object" ? body as { attachment?: unknown } : undefined;
+			const attachment = wrapper?.attachment !== undefined && typeof wrapper.attachment === "object" ? wrapper.attachment : undefined;
+			const attachmentRecord = attachment !== null && typeof attachment === "object" ? attachment as Record<string, unknown> : undefined;
+			const cachedId = typeof attachmentRecord?.videoId === "string" ? attachmentRecord.videoId : undefined;
+			const cached = cachedId === undefined ? undefined : videoCache.get(cachedId);
+			if (cached !== undefined) { sendVideoBytes(req, res, cached.data, cached.mediaType); return; }
+			const persisted = await readPersistedVideo(attachment);
+			if (persisted === undefined) { res.statusCode = 404; res.setHeader("content-type", "text/plain; charset=utf-8"); res.end("video not found"); return; }
+			sendVideoBytes(req, res, persisted.data, persisted.mediaType);
+			return;
+		}
 		const url = new URL(req.url ?? "", "http://localhost");
 		const id = url.searchParams.get("id");
 		const entry = id === null ? undefined : videoCache.get(id);
@@ -416,13 +610,7 @@ function serveVideo(req: import("node:http").IncomingMessage, res: import("node:
 			res.end("video not found");
 			return;
 		}
-		res.statusCode = 200;
-		res.setHeader("content-type", entry.mediaType);
-		res.setHeader("content-length", String(entry.data.byteLength));
-		res.setHeader("cache-control", "no-store");
-		res.setHeader("accept-ranges", "none");
-		if (req.method === "HEAD") { res.end(); return; }
-		res.end(Buffer.from(entry.data));
+		sendVideoBytes(req, res, entry.data, entry.mediaType);
 	} catch {
 		res.statusCode = 500;
 		res.end("video route error");
@@ -509,6 +697,7 @@ interface VideoOutputValue {
 	sourceUrl?: string;
 	savedTo?: string;
 	saveError?: string;
+	attachment?: VideoAttachmentRef;
 }
 
 const VIDEO_OUTPUT_SCHEMA = {
@@ -524,8 +713,17 @@ const VIDEO_OUTPUT_SCHEMA = {
 		sourceUrl: { type: "string" },
 		savedTo: { type: "string" },
 		saveError: { type: "string" },
+		attachment: {
+			type: "object",
+			additionalProperties: false,
+			properties: {
+				videoId: { type: "string", required: true },
+				savedTo: { type: "string", required: true },
+				mediaType: { type: "string", required: true },
+			},
+		},
 	},
-};
+} as const;
 
 async function finishVideo(
 	generated: GeneratedVideo & { sourceUrl?: string },
@@ -554,6 +752,12 @@ async function finishVideo(
 			data: generated.data,
 			signal: exec.signal,
 		});
+		// Record the trusted root for this lifetime and co-locate a marker index
+		// so the route can re-serve the video from disk even after a restart,
+		// when both the byte cache and the trusted-root set are gone.
+		rememberWorkspaceRoot(workspaceRoot);
+		await upsertWorkspaceMarker(dirname(value.savedTo), videoId, basename(value.savedTo), generated.mediaType, generated.data.byteLength);
+		value.attachment = { videoId, savedTo: value.savedTo, mediaType: generated.mediaType };
 	} catch (error) {
 		exec.signal.throwIfAborted();
 		value.saveError = error instanceof Error ? error.message : String(error);
@@ -607,7 +811,7 @@ export function apply(ctx: Context, config: Config = {}): void {
 					text: `Generated one video with ${value.provider}/${value.model} (${String(value.bytes)} bytes). It is already attached to the conversation.${saved} Respond to the user without reading or searching for the video.`,
 				}];
 			},
-			presentationMeta: (args: { prompt: string }, value: VideoOutputValue) => ({
+			presentationMeta: (args: { prompt: string; duration?: number }, value: VideoOutputValue) => ({
 				kind: "dsh-video-gen",
 				provider: value.provider,
 				model: value.model,
@@ -616,7 +820,9 @@ export function apply(ctx: Context, config: Config = {}): void {
 				route: value.route,
 				bytes: value.bytes,
 				...(typeof value.savedTo === "string" ? { savedTo: value.savedTo } : {}),
+				...(value.attachment && typeof value.attachment === "object" ? { attachment: value.attachment } : {}),
 				...(typeof value.sourceUrl === "string" ? { sourceUrl: value.sourceUrl } : {}),
+				...(typeof args.duration === "number" ? { duration: args.duration } : {}),
 				prompt: args.prompt,
 			}),
 		},
@@ -678,7 +884,7 @@ export function apply(ctx: Context, config: Config = {}): void {
 					text: `Animated one video from a source image with ${value.provider}/${value.model} (${String(value.bytes)} bytes). It is already attached to the conversation.${saved} Respond to the user without reading or searching for the video.`,
 				}];
 			},
-			presentationMeta: (args: { prompt: string }, value: VideoOutputValue) => ({
+			presentationMeta: (args: { prompt: string; duration?: number }, value: VideoOutputValue) => ({
 				kind: "dsh-video-gen",
 				operation: "animate",
 				provider: value.provider,
@@ -688,7 +894,9 @@ export function apply(ctx: Context, config: Config = {}): void {
 				route: value.route,
 				bytes: value.bytes,
 				...(typeof value.savedTo === "string" ? { savedTo: value.savedTo } : {}),
+				...(value.attachment && typeof value.attachment === "object" ? { attachment: value.attachment } : {}),
 				...(typeof value.sourceUrl === "string" ? { sourceUrl: value.sourceUrl } : {}),
+				...(typeof args.duration === "number" ? { duration: args.duration } : {}),
 				prompt: args.prompt,
 			}),
 		},
@@ -743,5 +951,24 @@ export function apply(ctx: Context, config: Config = {}): void {
 		},
 		presentResult: (_args, result) => videoPresentation(result),
 	}));
+}
+
+// Exported for tests and advanced integrations; the plugin wiring above is the
+// primary surface.
+export {
+	serveVideo,
+	readPersistedVideo,
+	upsertWorkspaceMarker,
+	readWorkspaceMarkerEntry,
+	cacheVideo,
+	rememberWorkspaceRoot,
+	saveVideoToWorkspace,
+	finishVideo,
+};
+
+/** Drop every in-memory video byte and trusted workspace root (test helper). */
+export function __resetVideoRouteStateForTests(): void {
+	videoCache.clear();
+	knownWorkspaceRoots.clear();
 }
 //#endregion
