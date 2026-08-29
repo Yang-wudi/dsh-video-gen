@@ -7,5 +7,9 @@ node_modules/
 # Session tooling state
 .agent-teams/
 
+# Reference checkouts (upstream source kept locally for comparison only)
+dsh-image-gen-clone/
+dsh-image-gen-ref/
+
 # Logs
 *.log
