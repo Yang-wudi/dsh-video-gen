@@ -9,6 +9,10 @@
     "url": "git+https://github.com/Yang-wudi/dsh-video-gen.git"
   },
   "license": "MIT",
+  "homepage": "https://github.com/Yang-wudi/dsh-video-gen#readme",
+  "bugs": {
+    "url": "https://github.com/Yang-wudi/dsh-video-gen/issues"
+  },
   "main": "lib/index.js",
   "types": "src/index.ts",
   "exports": {
