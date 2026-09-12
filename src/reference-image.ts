@@ -1,4 +1,5 @@
 /** Resolve a reference image for image-to-video (animate_image) requests. */
+import type { ImageAttachmentRef } from "@deepseek-ai/dsh-attachment";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 
@@ -7,13 +8,19 @@ export interface ResolvedReferenceImage {
 	mediaType: string;
 }
 
+/** One image reference carried by the current conversation (harness-owned shape). */
+export type ConversationImageRef = ImageAttachmentRef;
+
 export interface ResolveReferenceImageInput {
 	sourceAttachmentId?: string;
 	sourcePath?: string;
 	workspaceRoot?: string;
 	maxBytes?: number;
 	signal: AbortSignal;
-	readImage?: (id: string, signal?: AbortSignal) => Promise<{ data?: Uint8Array; ref?: { data?: Uint8Array; mediaType?: string } } | undefined>;
+	/** Images the current conversation carries, oldest first. */
+	conversationImages?: readonly ConversationImageRef[];
+	/** Reads the bytes behind one conversation image reference. */
+	readImage?: (ref: ConversationImageRef, signal?: AbortSignal) => Promise<{ data?: Uint8Array; mediaType?: string } | undefined>;
 }
 
 export async function resolveReferenceImage(input: ResolveReferenceImageInput): Promise<ResolvedReferenceImage | undefined> {
@@ -30,31 +37,66 @@ export async function resolveReferenceImage(input: ResolveReferenceImageInput): 
 		});
 	}
 
-	if (input.sourceAttachmentId === undefined) {
-		return undefined;
+	if (input.sourceAttachmentId !== undefined) {
+		const named = findConversationImage(input.conversationImages ?? [], input.sourceAttachmentId);
+		if (named === undefined) {
+			throw new Error(`animate_image could not find image attachment ${input.sourceAttachmentId} in the current conversation`);
+		}
+		return readConversationImage(input, named, input.sourceAttachmentId);
 	}
 
+	// Neither argument given: the tool description promises the newest image in
+	// the conversation, so take the last one the session carries.
+	const newest = (input.conversationImages ?? []).at(-1);
+	if (newest === undefined) return undefined;
+	return readConversationImage(input, newest, undefined);
+}
+
+/** Read one conversation image through the injected attachment store. */
+async function readConversationImage(
+	input: ResolveReferenceImageInput,
+	ref: ConversationImageRef,
+	label: string | undefined,
+): Promise<ResolvedReferenceImage> {
 	if (input.readImage === undefined) {
 		throw new Error("animate_image requires an image attachment store to resolve source_attachment_id");
 	}
-
 	try {
-		const stored = await input.readImage(input.sourceAttachmentId, input.signal);
-		if (stored === undefined) {
-			throw new Error(`animate_image could not find image attachment ${input.sourceAttachmentId}`);
-		}
-		const data = stored.data ?? stored.ref?.data;
-		if (data === undefined) {
-			throw new Error(`animate_image could not read image data for attachment ${input.sourceAttachmentId}`);
+		const stored = await input.readImage(ref, input.signal);
+		if (stored?.data === undefined) {
+			throw new Error("the attachment store returned no image data");
 		}
 		return {
-			data: data instanceof Uint8Array ? data : new Uint8Array(data),
-			mediaType: stored.ref?.mediaType ?? "image/png",
+			data: stored.data instanceof Uint8Array ? stored.data : new Uint8Array(stored.data),
+			mediaType: stored.mediaType ?? "image/png",
 		};
 	} catch (error) {
-		if (error instanceof Error && error.message.includes("animate_image")) throw error;
-		throw new Error(`animate_image could not find image attachment ${input.sourceAttachmentId}: ${error instanceof Error ? error.message : String(error)}`);
+		const named = label === undefined ? "the newest conversation image" : `image attachment ${label}`;
+		throw new Error(`animate_image could not read ${named}: ${error instanceof Error ? error.message : String(error)}`);
 	}
+}
+
+/**
+ * Find an image the model referred to. The harness may surface either the raw
+ * attachment id or its sha256 digest, so both forms are matched.
+ */
+function findConversationImage(refs: readonly ConversationImageRef[], requested: string): ConversationImageRef | undefined {
+	for (let index = refs.length - 1; index >= 0; index -= 1) {
+		const ref = refs[index];
+		if (ref !== undefined && String(ref.attachmentId) === requested) return ref;
+	}
+	const requestedDigest = sha256Digest(requested);
+	if (requestedDigest === undefined) return undefined;
+	for (let index = refs.length - 1; index >= 0; index -= 1) {
+		const ref = refs[index];
+		if (ref !== undefined && sha256Digest(String(ref.attachmentId)) === requestedDigest) return ref;
+	}
+	return undefined;
+}
+
+/** The 64-hex sha256 a harness may use in place of a raw attachment id. */
+function sha256Digest(value: string): string | undefined {
+	return /^(?:sha256:)?([0-9a-f]{64})$/i.exec(value.trim())?.[1]?.toLowerCase();
 }
 
 async function readWorkspaceReferenceImage(input: {

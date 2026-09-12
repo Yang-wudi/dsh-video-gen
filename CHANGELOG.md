@@ -2,6 +2,23 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-09-13
+
+### Fixed
+
+- **`animate_image` works from an image pasted into the chat.** The `source_attachment_id` branch was never wired: the call site omitted the reader that `resolveReferenceImage` requires, so every request through it failed with "requires an image attachment store" — and the tool description actively told the model to use it. The plugin now injects the `attachments` service, collects the conversation's image references from the session (`deriveMessages()` → image / nested tool-result blocks, the same traversal `dsh-image-gen` uses), and resolves from those.
+- The documented "omit both arguments to animate the newest conversation image" behaviour now exists: with neither `source_path` nor `source_attachment_id`, the newest image the conversation carries is used. Previously that also threw.
+- Attachment ids are matched by exact value first, then by sha256 digest, so a harness that surfaces the digest form still resolves.
+
+### Changed
+
+- `resolveReferenceImage` takes `conversationImages` + a `readImage(ref, signal)` reader instead of a bare id reader. It stays exported from `lib/reference-image.js` for tests and advanced integrations; note the reader signature change.
+- `inject` now lists `attachments`.
+
+### Added
+
+- `tests/reference-image.test.mjs`: 9 cases covering workspace paths, attachment lookup by id and digest, the newest-image fallback, missing attachments, and failure reporting (42 tests total).
+
 ## [0.2.2] - 2026-09-13
 
 ### Fixed

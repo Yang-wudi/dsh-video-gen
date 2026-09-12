@@ -1,5 +1,6 @@
 /** Multi-provider video-generation Bundle for DeepSeek Harness. */
 import type { Context } from "@deepseek-ai/cordis";
+import type {} from "@deepseek-ai/dsh-attachment";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import type {} from "@deepseek-ai/dsh-host-webserver";
 // Namespace import on purpose: dsh 0.1.5 removed the module-level
@@ -40,7 +41,7 @@ import {
 } from "./shared.js";
 
 import { generateGoogleVideo, animateGoogleVideo, type GeneratedVideo } from "./google.js";
-import { resolveReferenceImage } from "./reference-image.js";
+import { resolveReferenceImage, type ConversationImageRef } from "./reference-image.js";
 
 // Re-export for external consumers
 export {
@@ -695,7 +696,38 @@ async function saveVideoToWorkspace(options: {
 
 //#region tool + plugin wiring
 export const name = "dsh-video-gen";
-export const inject = ["tools", "credentials", "webServer"];
+export const inject = ["tools", "credentials", "webServer", "attachments"];
+
+/** The subset of a derived message the image walk reads. */
+interface MessageBlock {
+	type?: string;
+	attachment?: ConversationImageRef;
+	content?: MessageBlock[];
+}
+
+/**
+ * Every image the running conversation carries, oldest first. This is what
+ * `source_attachment_id` names and what "the newest image" means when the model
+ * omits both arguments, so image-to-video works from a picture the user simply
+ * pasted into the chat.
+ * @param agent - the executing agent, when the tool runs inside a session.
+ * @returns the conversation's image references in conversation order.
+ */
+function collectConversationImages(
+	agent: { session?: { deriveMessages?: () => { content?: unknown }[] } } | undefined,
+): ConversationImageRef[] {
+	const messages = agent?.session?.deriveMessages?.() ?? [];
+	const refs: ConversationImageRef[] = [];
+	const walk = (blocks: unknown, into: ConversationImageRef[]): void => {
+		if (!Array.isArray(blocks)) return;
+		for (const block of blocks as MessageBlock[]) {
+			if (block?.type === "image" && block.attachment !== undefined) into.push(block.attachment);
+			else if (block?.type === "tool-result") walk(block.content, into);
+		}
+	};
+	for (const message of messages) walk(message?.content, refs);
+	return refs;
+}
 
 interface VideoOutputValue {
 	provider: string;
@@ -972,6 +1004,11 @@ export function apply(ctx: Context, config: Config = {}): void {
 				workspaceRoot: exec.agent?.session.header.cwd,
 				maxBytes: DEFAULT_MAX_VIDEO_BYTES,
 				signal: exec.signal,
+				conversationImages: collectConversationImages(exec.agent),
+				readImage: async (ref, signal) => {
+					const stored = await ctx.attachments.readImage(ref, signal ?? exec.signal);
+					return { data: stored.data, mediaType: stored.ref.mediaType };
+				},
 			});
 
 			if (sourceImage === undefined) {

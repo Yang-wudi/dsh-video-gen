@@ -1,6 +1,6 @@
 {
   "name": "dsh-video-gen",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Bring text-to-video and image-to-video generation to DeepSeek Harness — DashScope Wanx, Volcengine/Doubao Seedance, Google Veo, OpenAI Sora & compatible relays.",
   "type": "module",
   "author": "Yang-wudi",
@@ -94,7 +94,7 @@
     "check": "node --check lib/index.js && node --check lib/client.js && node --check lib/shared.js && node --check lib/google.js && node --check lib/reference-image.js",
     "typecheck": "tsc --noEmit",
     "build": "tsc",
-    "test": "node tests/video-route.test.mjs && node tests/finish-video.test.mjs && node tests/client-bundle.test.mjs"
+    "test": "node tests/video-route.test.mjs && node tests/finish-video.test.mjs && node tests/reference-image.test.mjs && node tests/client-bundle.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
