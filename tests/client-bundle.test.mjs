@@ -33,7 +33,15 @@ async function loadBundle() {
 // so it is captured once here and shared by every test in this file.
 const bundleExports = await loadBundle();
 
-function makeContext() {
+/**
+ * A context double for the client half. `remoteCredentials` models dsh 0.1.5
+ * (the credential face on `ctx.get("remote")`, positional arguments);
+ * `legacyCredentials` models older builds (the face on
+ * `ctx.get("connection").api`, object arguments). Passing neither leaves both
+ * absent, which is the graceful-degradation case.
+ * @returns the context plus the recorded registrations and effects.
+ */
+function makeContext({ remoteCredentials, legacyCredentials } = {}) {
 	const injected = [];
 	const registered = [];
 	const effects = [];
@@ -42,7 +50,8 @@ function makeContext() {
 		// `connection` is additionally read through ctx.get().
 		settingsScope: { bind: () => ({ getSnapshot: () => ({}), subscribe: () => () => {} }) },
 		get(name) {
-			if (name === "connection") return { api: { credentials: {} } };
+			if (name === "remote") return remoteCredentials === undefined ? undefined : { credentials: remoteCredentials };
+			if (name === "connection") return { api: { credentials: legacyCredentials } };
 			if (name === "settingsScope") return ctx.settingsScope;
 			if (name === "locale") return undefined;
 			return {};
@@ -54,6 +63,14 @@ function makeContext() {
 		effect(fn, id) { effects.push([fn, id]); },
 	};
 	return { ctx, injected, registered, effects };
+}
+
+/** Run apply and resolve the credential face the settings card receives. */
+function credentialFaceOf(options) {
+	const { ctx, injected, registered } = makeContext(options);
+	bundleExports.apply(ctx);
+	for (const [, factory] of injected) factory();
+	return registered[0].inject().credentials;
 }
 
 test("client bundle loads and exposes the ModuleLoader surface", () => {
@@ -171,4 +188,58 @@ test("gallery strings cover the image-gen parity features", async () => {
 test("bundle has no stray debug logging on the gallery save path", async () => {
 	const source = await readFile(new URL("../lib/client.js", import.meta.url), "utf8");
 	assert.ok(!/console\.log\("\[dsh-video-gen\] Gallery item saved/.test(source), "save path must stay quiet");
+});
+
+// --- credential face across dsh generations --------------------------------
+// dsh 0.1.5 moved the credential API to `ctx.remote.credentials` with positional
+// arguments; older builds expose it as `connection.api.credentials` with object
+// arguments. The card only ever sees the normalised face.
+
+test("credential face uses remote.credentials on dsh 0.1.5", async () => {
+	const calls = [];
+	const face = credentialFaceOf({
+		remoteCredentials: {
+			async describe(refs) { calls.push(["describe", ...refs]); return { ok: true, value: { [refs[0]]: { configured: true } } }; },
+			async set(ref, value) { calls.push(["set", ref, value]); return { ok: true }; },
+		},
+	});
+	assert.deepEqual(await face.describe("DASHSCOPE_API_KEY"), { ok: true, configured: true });
+	await face.set("DASHSCOPE_API_KEY", "sk-test");
+	assert.deepEqual(calls, [
+		["describe", "DASHSCOPE_API_KEY"],
+		["set", "DASHSCOPE_API_KEY", "sk-test"],
+	]);
+});
+
+test("credential face reports a missing key and surfaces write failures", async () => {
+	const face = credentialFaceOf({
+		remoteCredentials: {
+			async describe() { return { ok: true, value: {} }; },
+			async set() { return { ok: false, error: { message: "read only" } }; },
+		},
+	});
+	assert.deepEqual(await face.describe("ARK_API_KEY"), { ok: true, configured: false });
+	await assert.rejects(() => face.set("ARK_API_KEY", "sk-test"), /read only/);
+});
+
+test("credential face falls back to connection.api.credentials on older builds", async () => {
+	const calls = [];
+	const face = credentialFaceOf({
+		legacyCredentials: {
+			async describe(params) { calls.push(["describe", ...params.refs]); return { result: { ok: true, value: { credentials: { [params.refs[0]]: { configured: true } } } } }; },
+			async set(params) { calls.push(["set", params.ref, params.value]); return { result: { ok: true } }; },
+		},
+	});
+	assert.deepEqual(await face.describe("OPENAI_API_KEY"), { ok: true, configured: true });
+	await face.set("OPENAI_API_KEY", "sk-test");
+	assert.deepEqual(calls, [
+		["describe", "OPENAI_API_KEY"],
+		["set", "OPENAI_API_KEY", "sk-test"],
+	]);
+});
+
+test("credential face degrades when neither API is present", async () => {
+	const face = credentialFaceOf();
+	assert.deepEqual(await face.describe("GEMINI_API_KEY"), { ok: false, configured: false });
+	await assert.rejects(() => face.set("GEMINI_API_KEY", "sk-test"), /unavailable/);
 });

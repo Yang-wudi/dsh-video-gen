@@ -2,7 +2,11 @@
 import type { Context } from "@deepseek-ai/cordis";
 import { credentialRef } from "@deepseek-ai/dsh-credentials";
 import type {} from "@deepseek-ai/dsh-host-webserver";
-import { installSettingsSection, settingsNamespace } from "@deepseek-ai/dsh-settings";
+// Namespace import on purpose: dsh 0.1.5 removed the module-level
+// `installSettingsSection` / `settingsNamespace` helpers, and a named import
+// that resolves to nothing is a SyntaxError at module evaluation — it would take
+// the whole host down instead of degrading. The generation is probed at runtime.
+import * as settingsApi from "@deepseek-ai/dsh-settings";
 import { defineTool, type ToolResult } from "@deepseek-ai/dsh-tools";
 import z from "@deepseek-ai/schemastery";
 import { randomUUID } from "node:crypto";
@@ -782,9 +786,51 @@ function videoPresentation(result: ToolResult): { card: "generic"; title: string
 	};
 }
 
+/**
+ * Register the settings section across dsh settings generations. 0.1.5 moved
+ * this onto the `settings` service (`installSection`) and removed both
+ * module-level helpers; older builds only ship the helpers. The generation is
+ * detected at runtime so a single bundle serves the whole supported range.
+ * @param ctx - the plugin context.
+ * @param config - the composition entry, i.e. the section's initial value.
+ * @param hooks - the section hooks (`setSource` / `onChange`).
+ */
+function installVideoSettings(ctx: Context, config: Config, hooks: SettingsSectionHooks<Config>): void {
+	// Every cast below goes through `unknown`: the installed type declarations may
+	// describe either generation (the module d.ts a build has, and what the
+	// registry serves today, differ), so the probe is structural by design.
+	const modern = settingsApi as unknown as {
+		SettingsProvider?: { prototype?: { installSection?: unknown } };
+	};
+	if (typeof modern.SettingsProvider?.prototype?.installSection === "function") {
+		ctx.inject(["settings"], (settingsCtx) => {
+			const service = settingsCtx.settings as unknown as {
+				installSection: (owner: Context, ns: string, schema: unknown, entry: Config, hooks: SettingsSectionHooks<Config>) => void;
+			};
+			service.installSection(ctx, VIDEO_GENERATION_NAMESPACE, Config, config, hooks);
+		});
+		return;
+	}
+	const legacy = settingsApi as unknown as {
+		installSettingsSection?: (owner: Context, ns: unknown, schema: unknown, entry: Config, hooks: SettingsSectionHooks<Config>) => void;
+		settingsNamespace?: (name: string) => unknown;
+	};
+	if (typeof legacy.installSettingsSection === "function" && typeof legacy.settingsNamespace === "function") {
+		legacy.installSettingsSection(ctx, legacy.settingsNamespace(VIDEO_GENERATION_NAMESPACE), Config, config, hooks);
+		return;
+	}
+	ctx.logger?.warn?.("[dsh-video-gen] unsupported settings API; the settings section stays disabled");
+}
+
+/** Hooks handed to a settings section (shape shared by both generations). */
+interface SettingsSectionHooks<T> {
+	setSource: (source: () => T) => void;
+	onChange: () => void;
+}
+
 export function apply(ctx: Context, config: Config = {}): void {
 	let current: () => Config = () => config;
-	installSettingsSection(ctx, settingsNamespace(VIDEO_GENERATION_NAMESPACE), Config, config, {
+	installVideoSettings(ctx, config, {
 		setSource: (source) => { current = source; },
 		onChange: () => {},
 	});

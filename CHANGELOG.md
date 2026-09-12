@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-09-13
+
+### Fixed
+
+- **Compatibility with dsh 0.1.5**: `@deepseek-ai/dsh-settings` removed the module-level `installSettingsSection` / `settingsNamespace` helpers. Because a missing *named* import is a `SyntaxError` at module evaluation, the plugin took the whole host's plugin tree down instead of degrading. The section now registers through the `settings` service (`ctx.settings.installSection`) when that generation is present, and falls back to the legacy helpers on older builds — one bundle serves both.
+- **Client credentials on dsh 0.1.5**: the credential face moved from `connection.api.credentials` (object arguments) to `ctx.remote.credentials` (positional arguments). Both are normalised behind a single `describe(ref) -> {ok, configured}` / `set(ref, value)` interface; the settings card is unchanged, and a host with neither API degrades to "key unavailable" instead of throwing.
+- `dsh.client.inject` no longer names `@deepseek-ai/dsh-client-runtime`, which is not published for 0.1.5; `@deepseek-ai/dsh-api-remotes` (the package carrying the credential face) takes its place. That package exists in the 0.1.1 line too, so older hosts are unaffected.
+
+### Added
+
+- Credential-face tests covering the 0.1.5 API, the legacy API, and the no-API fallback (4 new cases; 33 total).
+
 ## [0.2.1] - 2026-08-29
 
 ### Added
