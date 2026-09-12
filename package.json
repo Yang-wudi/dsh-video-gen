@@ -1,6 +1,6 @@
 {
   "name": "dsh-video-gen",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Bring text-to-video and image-to-video generation to DeepSeek Harness — DashScope Wanx, Volcengine/Doubao Seedance, Google Veo, OpenAI Sora & compatible relays.",
   "type": "module",
   "author": "Yang-wudi",

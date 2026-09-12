@@ -45,12 +45,16 @@ function makeContext({ remoteCredentials, legacyCredentials } = {}) {
 	const injected = [];
 	const registered = [];
 	const effects = [];
+	// cordis refuses to read a service the plugin never injected, so this double
+	// enforces the same rule — the plugin failed in the real UI by reading
+	// `remote` while only `connection` was declared.
+	const declared = new Set(bundleExports.inject);
 	const ctx = {
 		// The DSH client exposes the injected services as context properties;
 		// `connection` is additionally read through ctx.get().
 		settingsScope: { bind: () => ({ getSnapshot: () => ({}), subscribe: () => () => {} }) },
 		get(name) {
-			if (name === "remote") return remoteCredentials === undefined ? undefined : { credentials: remoteCredentials };
+			if (!declared.has(name)) throw new Error(`cannot get property "${name}" without inject`);
 			if (name === "connection") return { api: { credentials: legacyCredentials } };
 			if (name === "settingsScope") return ctx.settingsScope;
 			if (name === "locale") return undefined;
@@ -62,6 +66,9 @@ function makeContext({ remoteCredentials, legacyCredentials } = {}) {
 		},
 		effect(fn, id) { effects.push([fn, id]); },
 	};
+	if (declared.has("remote")) {
+		ctx.remote = remoteCredentials === undefined ? undefined : { credentials: remoteCredentials };
+	}
 	return { ctx, injected, registered, effects };
 }
 
@@ -75,7 +82,9 @@ function credentialFaceOf(options) {
 
 test("client bundle loads and exposes the ModuleLoader surface", () => {
 	assert.equal(typeof bundleExports.apply, "function");
-	assert.deepEqual(bundleExports.inject, ["slots", "connection", "settingsScope", "locale"]);
+	// Every service the bundle reads must be declared here — cordis fails the
+	// whole plugin otherwise ("Failed to load plugins" in the harness UI).
+	assert.deepEqual(bundleExports.inject, ["slots", "connection", "settingsScope", "locale", "remote"]);
 	assert.equal(typeof bundleExports.VideoGenerationSettingsCard, "function");
 	assert.equal(typeof bundleExports.GeneratedVideoCard, "function");
 });

@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.4] - 2026-09-13
+
+### Fixed
+
+- **The harness UI failed the whole plugin: "failed to apply loader entry … cannot get property \"remote.credentials\" without inject".** cordis refuses to read a service a plugin never injected, and 0.2.2 switched the credential face to `ctx.remote.credentials` while leaving `remote` out of the client's `inject` list — so the client half was rejected at load and the harness showed "Failed to load plugins". `remote` is now declared (it exists in both the 0.1.1 and 0.1.5 compositions), and the read is wrapped so a build with a different `remote` shape degrades to the legacy `connection.api.credentials` face instead of failing the plugin.
+
+### Added
+
+- The client-bundle test double now enforces cordis's rule — reading an undeclared service throws, exactly as the harness does — and a test asserts the declared `inject` list. Removing `remote` from `inject` fails three tests; before this it failed none.
+
 ## [0.2.3] - 2026-09-13
 
 ### Fixed
